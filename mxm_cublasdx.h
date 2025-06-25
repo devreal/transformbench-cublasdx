@@ -42,6 +42,11 @@ namespace mra {
 
     constexpr int CUBLAS_MIN_MN = 16;
 
+    template<typename TensorT>
+    void print_tensors(const std::string& name, TensorT&& tensor) {
+      printf("%s: ", names); cute::print_type(tensors); printf("\n");
+    }
+
     template<typename T, int K>
     constexpr int cublasdx_max_mn() {
       // K^2 for square B/A, double buffering for A/B and C
@@ -161,20 +166,26 @@ namespace mra {
                                                          GEMM::c_value_type, GEMM::c_value_type>(
                 smem,
                 cublasdx::alignment_of_v_a<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_a()),
-		cublasdx::alignment_of_v_b<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_b()),
-		cublasdx::alignment_of_v_a<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_a()),
-		cublasdx::alignment_of_v_c<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_c()),
-		cublasdx::alignment_of_v_c<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_c()));
+                cublasdx::alignment_of_v_b<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_b()),
+                cublasdx::alignment_of_v_a<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_a()),
+                cublasdx::alignment_of_v_c<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_c()),
+                cublasdx::alignment_of_v_c<GEMM>, cublasdx::cosize(GEMM::get_layout_smem_c()));
 
           /* copy b tensor into shared memory and leave there */
           auto b_global_tensor = cublasdx::make_tensor(b, GEMM::get_layout_gmem_b());
           auto b_shared_tensor = cublasdx::make_tensor(smem_b, GEMM::get_layout_smem_b());
           cublasdx::copy<GEMM, alignment::b>(b_global_tensor, b_shared_tensor);
+          print_tensors("b_global_tensor", b_global_tensor);
+          print_tensors("b_shared_tensor", b_shared_tensor);
 
           auto a_shared_tensor   = cublasdx::make_tensor(smem_a,   GEMM::get_layout_smem_a());
           auto a_shared_tensor_n = cublasdx::make_tensor(smem_a_n, GEMM::get_layout_smem_a());
+          print_tensors("a_global_tensor", a_global_tensor);
+          print_tensors("a_shared_tensor", a_shared_tensor);
           auto c_shared_tensor   = cublasdx::make_tensor(smem_c,   GEMM::get_layout_smem_c());
           auto c_shared_tensor_n = cublasdx::make_tensor(smem_c_n, GEMM::get_layout_smem_c());
+          print_tensors("c_global_tensor", c_global_tensor);
+          print_tensors("c_shared_tensor", c_shared_tensor);
 
           int i;
 
