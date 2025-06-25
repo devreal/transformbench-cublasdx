@@ -321,13 +321,13 @@ namespace mra {
   template<typename T>
   constexpr int mTxmq_shmem_size(int K) {
     switch (K) {
-      case 6: return detail::cublasdx_shmem_size_k<T, 6>();
-      case 8: return detail::cublasdx_shmem_size_k<T, 8>();
-      case 10: return detail::cublasdx_shmem_size_k<T, 10>();
-      case 12: return detail::cublasdx_shmem_size_k<T, 12>();
+      //case 6: return detail::cublasdx_shmem_size_k<T, 6>();
+      //case 8: return detail::cublasdx_shmem_size_k<T, 8>();
+      //case 10: return detail::cublasdx_shmem_size_k<T, 10>();
+      //case 12: return detail::cublasdx_shmem_size_k<T, 12>();
       case 16: return detail::cublasdx_shmem_size_k<T, 16>();
-      case 20: return detail::cublasdx_shmem_size_k<T, 20>();
-      case 32: return detail::cublasdx_shmem_size_k<T, 32>();
+      //case 20: return detail::cublasdx_shmem_size_k<T, 20>();
+      //case 32: return detail::cublasdx_shmem_size_k<T, 32>();
       default: THROW("CUBLASdx: Unsupported K");
     }
   }
@@ -347,13 +347,13 @@ namespace mra {
   template<typename T>
   constexpr Dim3 mTxmq_blockdim(int K) {
     switch (K) {
-      case 6: return detail::cublasdx_blockdim_k<T, 6>();
-      case 8: return detail::cublasdx_blockdim_k<T, 8>();
-      case 10: return detail::cublasdx_blockdim_k<T, 10>();
-      case 12: return detail::cublasdx_blockdim_k<T, 12>();
+      //case 6: return detail::cublasdx_blockdim_k<T, 6>();
+      //case 8: return detail::cublasdx_blockdim_k<T, 8>();
+      //case 10: return detail::cublasdx_blockdim_k<T, 10>();
+      //case 12: return detail::cublasdx_blockdim_k<T, 12>();
       case 16: return detail::cublasdx_blockdim_k<T, 16>();
-      case 20: return detail::cublasdx_blockdim_k<T, 20>();
-      case 32: return detail::cublasdx_blockdim_k<T, 32>();
+      //case 20: return detail::cublasdx_blockdim_k<T, 20>();
+      //case 32: return detail::cublasdx_blockdim_k<T, 32>();
       default: THROW("CUBLASdx: Unsupported K");
     }
   }
