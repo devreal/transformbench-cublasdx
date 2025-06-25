@@ -24,14 +24,27 @@ if (TARGET mathdx::cublasdx)
   message(STATUS "Found cublasDx at ${mathdx_CUBLASDX_DIR}")
 endif()
 
-# Add the executable
+# Simple interface that holds cublasDx and CUDA settings
+add_library(libmra INTERFACE)
+# Link against cublasDx and CUDA
+target_link_libraries(libmra mathdx::cublasdx)
+# Set the CUDA architecture
+target_compile_definitions(libmra PUBLIC MRA_CUDA_ARCH=${CMAKE_CUDA_ARCHITECTURES})
+# Enable support for constexpr and extended lambdas
+target_compile_options(libmra PUBLIC --expt-relaxed-constexpr --extended-lambda)
+
+# Add the transformbench executable
 add_executable(transformbench transformbench.cu)
 
-# Link against cuBLASLt and CUDA
-target_link_libraries(transformbench mathdx::cublasdx)
+# Link against the MRA interface
+target_link_libraries(transformbench libmra)
 
-# Set the CUDA architecture
-target_compile_definitions(transformbench PUBLIC MRA_CUDA_ARCH=${CMAKE_CUDA_ARCHITECTURES})
 
-# Enable support for constexpr and extended lambdas
-target_compile_options(transformbench PUBLIC --expt-relaxed-constexpr --extended-lambda)
+# Add the transformbench executable with suggested layout
+add_executable(transformbench_suggested transformbench.cu)
+
+# Link against the MRA interface
+target_link_libraries(transformbench_suggested libmra)
+
+# Enable using suggested layout instead of get_layout
+target_compile_definitions(transformbench_suggested PUBLIC USE_SUGGEST_LAYOUT)

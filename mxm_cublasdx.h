@@ -197,7 +197,7 @@ namespace mra {
 
           auto make_c_global_tensor = [&](int i){
             return cublasdx::make_tensor(c+((i*max_mn)*N), GEMM::get_layout_gmem_c());
-          }
+          };
 
           auto store_c = [&](auto& c_shared_tensor) {
 #if MRA_CUBLASDX_BLOCK_C
@@ -219,7 +219,7 @@ namespace mra {
                                       c_shared_tensor,
 #else  // MRA_CUBLASDX_BLOCK_C
                                       /* global tensor */
-                                      make_c_global_tensor(i)
+                                      make_c_global_tensor(i),
 #endif // MRA_CUBLASDX_BLOCK_C
                                       [&](){
                                         /* load only on first iteration, all others are prefetched */
