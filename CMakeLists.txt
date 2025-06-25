@@ -17,6 +17,9 @@ else(CMAKE_CUDA_COMPILER)
 endif(CMAKE_CUDA_COMPILER)
 set(HAVE_CUDA ${CMAKE_CUDA_COMPILER} CACHE BOOL "True if we can compile .cu files")
 
+option(USE_SUGGEST_LAYOUT "Use suggested layout instead of get_layout" OFF)
+option(DEBUG_TENSOR_TYPE "Compile-time print cute tensor types (breaks build)" OFF)
+
 
 # look for cublasDx
 find_package(mathdx REQUIRED COMPONENTS cublasdx)
@@ -39,12 +42,12 @@ add_executable(transformbench transformbench.cu)
 # Link against the MRA interface
 target_link_libraries(transformbench PUBLIC libmra)
 
+if (USE_SUGGEST_LAYOUT)
+    # Enable using suggested layout instead of get_layout
+    target_compile_definitions(transformbench PUBLIC USE_SUGGEST_LAYOUT)
+endif (USE_SUGGEST_LAYOUT)
 
-# Add the transformbench executable with suggested layout
-add_executable(transformbench_suggested transformbench.cu)
-
-# Link against the MRA interface
-target_link_libraries(transformbench_suggested PUBLIC libmra)
-
-# Enable using suggested layout instead of get_layout
-target_compile_definitions(transformbench_suggested PUBLIC USE_SUGGEST_LAYOUT)
+if (DEBUG_TENSOR_TYPE)
+    # Enable compile-time printing of cute tensor types (breaks build)
+    target_compile_definitions(transformbench PUBLIC DEBUG_TENSOR_TYPE)
+endif (DEBUG_TENSOR_TYPE)
