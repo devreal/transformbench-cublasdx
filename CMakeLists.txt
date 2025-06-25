@@ -27,8 +27,11 @@ endif()
 # Add the executable
 add_executable(transformbench transformbench.cu)
 
-# Include CUDA headers
-include_directories(${CUDA_TOOLKIT_ROOT_DIR}/include)
-
 # Link against cuBLASLt and CUDA
 target_link_libraries(transformbench mathdx::cublasdx)
+
+# Set the CUDA architecture
+target_compile_definitions(transformbench PUBLIC MRA_CUDA_ARCH=${CMAKE_CUDA_ARCHITECTURES})
+
+# Enable support for constexpr and extended lambdas
+target_compile_options(transformbench PUBLIC --expt-relaxed-constexpr --extended-lambda)
