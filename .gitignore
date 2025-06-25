@@ -30,3 +30,6 @@
 *.exe
 *.out
 *.app
+
+# custom build environment
+build_vscode*
