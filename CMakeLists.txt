@@ -17,7 +17,7 @@ else(CMAKE_CUDA_COMPILER)
 endif(CMAKE_CUDA_COMPILER)
 set(HAVE_CUDA ${CMAKE_CUDA_COMPILER} CACHE BOOL "True if we can compile .cu files")
 
-option(USE_SUGGEST_LAYOUT "Use suggested layout instead of get_layout" OFF)
+option(USE_SUGGEST_LAYOUT "Use suggested layout instead of get_layout" ON)
 option(DEBUG_TENSOR_TYPE "Compile-time print cute tensor types (breaks build)" OFF)
 
 

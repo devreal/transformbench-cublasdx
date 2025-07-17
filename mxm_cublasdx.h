@@ -89,6 +89,7 @@ namespace mra {
     };
 
     template<typename GEMM>
+    __forceinline__
     __device__ void mTxmq_cublasdx_core(auto&& a_shared_tensor, auto&& b_shared_tensor,
                                         auto&& c_tensor,
                                         auto&& load = [](){}, auto&& prefetch = [](){}) {
@@ -154,6 +155,7 @@ namespace mra {
     }
 
     template<int M, int N, int K, typename T>
+    __forceinline__
     __device__ void mTxmq_cublasdx_block(T* c, const T* a, const T* b) {
       constexpr auto blockdims = max_thread_dims(K);
       extern __shared__ __align__(16) char smem[];
@@ -287,6 +289,7 @@ namespace mra {
   } // namespace detail
 
   template <typename aT, typename bT, typename cT>
+  __forceinline__
   __device__ void mTxmq(long dimi, long dimj, long dimk,
                         cT* c, const aT* a, const bT* b) {
     int M = dimi;
@@ -321,13 +324,13 @@ namespace mra {
   template<typename T>
   constexpr int mTxmq_shmem_size(int K) {
     switch (K) {
-      //case 6: return detail::cublasdx_shmem_size_k<T, 6>();
-      //case 8: return detail::cublasdx_shmem_size_k<T, 8>();
-      //case 10: return detail::cublasdx_shmem_size_k<T, 10>();
-      //case 12: return detail::cublasdx_shmem_size_k<T, 12>();
+      case 6: return detail::cublasdx_shmem_size_k<T, 6>();
+      case 8: return detail::cublasdx_shmem_size_k<T, 8>();
+      case 10: return detail::cublasdx_shmem_size_k<T, 10>();
+      case 12: return detail::cublasdx_shmem_size_k<T, 12>();
       case 16: return detail::cublasdx_shmem_size_k<T, 16>();
-      //case 20: return detail::cublasdx_shmem_size_k<T, 20>();
-      //case 32: return detail::cublasdx_shmem_size_k<T, 32>();
+      case 20: return detail::cublasdx_shmem_size_k<T, 20>();
+      case 32: return detail::cublasdx_shmem_size_k<T, 32>();
       default: THROW("CUBLASdx: Unsupported K");
     }
   }
@@ -347,13 +350,13 @@ namespace mra {
   template<typename T>
   constexpr Dim3 mTxmq_blockdim(int K) {
     switch (K) {
-      //case 6: return detail::cublasdx_blockdim_k<T, 6>();
-      //case 8: return detail::cublasdx_blockdim_k<T, 8>();
-      //case 10: return detail::cublasdx_blockdim_k<T, 10>();
-      //case 12: return detail::cublasdx_blockdim_k<T, 12>();
+      case 6: return detail::cublasdx_blockdim_k<T, 6>();
+      case 8: return detail::cublasdx_blockdim_k<T, 8>();
+      case 10: return detail::cublasdx_blockdim_k<T, 10>();
+      case 12: return detail::cublasdx_blockdim_k<T, 12>();
       case 16: return detail::cublasdx_blockdim_k<T, 16>();
-      //case 20: return detail::cublasdx_blockdim_k<T, 20>();
-      //case 32: return detail::cublasdx_blockdim_k<T, 32>();
+      case 20: return detail::cublasdx_blockdim_k<T, 20>();
+      case 32: return detail::cublasdx_blockdim_k<T, 32>();
       default: THROW("CUBLASdx: Unsupported K");
     }
   }
