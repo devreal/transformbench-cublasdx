@@ -146,7 +146,7 @@ transform3d_rocwmma(double* __restrict__ result,
 // Dispatch
 
 __device__
-void transform(int n, double* result, const double* t, const double* c, double* workspace)
+void transform(int n, const double* t, const double* c, double* result, double* workspace)
 {
   // Launches one block; grid = 1 since this is a single-transform kernel.
   // For batched transforms, grid > 1 and pass a stride/batch index.
