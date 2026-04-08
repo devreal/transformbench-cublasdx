@@ -12,42 +12,157 @@
 #if defined(__HIP_DEVICE_COMPILE__)
 
 
-/**
- * T'is the version for HIP! Hop!
- */
+#include <hip/hip_runtime.h>
+#include <rocwmma/rocwmma.hpp>
 
-template <typename T>
-__device__ void transform(
-    int K,
-    const T* a,
-    const T* b,
-    T*& c,
-    T* workspace)
+static constexpr int WM = 16, WN = 16, WK = 4;
+static constexpr int WAVE     = 64;   // CDNA wavefront size
+static constexpr int K_CHUNK  = 16;   // k-output tile size for Phase 3
+
+template<int N>
+struct C {
+    static constexpr int NP     = ((N + WM - 1) / WM) * WM;
+    static constexpr int TILES  = NP / WM;               // tiles per dim
+    static constexpr int KT     = NP / WK;               // K-tiles per GEMM
+    static constexpr int BSIZE  = TILES * TILES * WAVE;  // threads per block
+    static constexpr int KCHUNKS = (N + K_CHUNK - 1) / K_CHUNK;
+    static constexpr int PAIRS  = (WM * WN) / WAVE;      // = 4, always
+};
+
+template<int N>
+__device__ void
+transform3d_rocwmma(double* __restrict__ result,
+                    const double* __restrict__ t,
+                    const double* __restrict__ c)
 {
-  constexpr const int ndim = 3; // fixed for benchmark
+    constexpr int NP     = C<N>::NP;
+    constexpr int TILES  = C<N>::TILES;
+    constexpr int KT     = C<N>::KT;
+    constexpr int KCHUNKS = C<N>::KCHUNKS;
+    constexpr int PAIRS  = C<N>::PAIRS;
 
-  extern __shared__ T b_shm[];
+    __shared__ double s_c   [NP * NP];  // transform matrix, permanent
+    __shared__ double s_work[NP * NP];  // reused: t-slice → u → w
 
-  std::copy_n(b, K * K, b_shm);
-  const T* pc = b_shm;
-  T *t0=workspace, *t1=c;
-  //std::swap(t0,t1);
-    auto tmp = t0;
-    t0 = t1;
-    t1 = tmp;
-  const int dimj = K;
-  int dimi = dimj*dimj;
-  mra::mTxmq(dimi, dimj, dimj, t0, a, pc);
-  for (int n=1; n<ndim; ++n) {
-    mra::mTxmq(dimi, dimj, dimj, t1, t0, pc);
-    auto tmp = t0;
-    t0 = t1;
-    t1 = tmp;
-    //std::swap(t0,t1);
-  }
-  /* no need to synchronize here, mTxmq synchronizes */
+    // Phase 1: A = c^T via col_major load of c (transposes it)
+    using FragA1 = rocwmma::fragment<rocwmma::matrix_a,   WM, WN, WK, double, rocwmma::col_major>;
+    using FragB1 = rocwmma::fragment<rocwmma::matrix_b,   WM, WN, WK, double, rocwmma::row_major>;
+    // Phase 2: A = u (row_major), B = c (row_major, no transpose)
+    using FragA2 = rocwmma::fragment<rocwmma::matrix_a,   WM, WN, WK, double, rocwmma::row_major>;
+    using FragB2 = rocwmma::fragment<rocwmma::matrix_b,   WM, WN, WK, double, rocwmma::row_major>;
+    using FragAcc = rocwmma::fragment<rocwmma::accumulator, WM, WN, WK, double>;
+
+    const int wid = threadIdx.x / WAVE;
+    const int wm  = wid / TILES;
+    const int wn  = wid % TILES;
+
+    // Load c into shared memory, zero-pad beyond N
+    for (int idx = threadIdx.x; idx < NP * NP; idx += blockDim.x) {
+        int ip = idx / NP, i = idx % NP;
+        s_c[idx] = (ip < N && i < N) ? c[ip * N + i] : 0.0;
+    }
+    __syncthreads();
+
+    // Outer k-chunk loop: controls register usage for Phase 3
+    for (int kchunk = 0; kchunk < KCHUNKS; ++kchunk) {
+
+        const int k0 = kchunk * K_CHUNK;
+        const int k1 = min(k0 + K_CHUNK, N);
+
+        double acc[PAIRS][K_CHUNK] = {};   // 4×16 = 64 fp64 per thread
+
+        for (int kp = 0; kp < N; ++kp) {
+
+            // Load t[:, :, kp] into s_work (zero-pad beyond N)
+            // Note: t[ip, jp, kp] has stride N in the jp direction;
+            // cache in shared memory so WMMA loads are coalesced.
+            for (int idx = threadIdx.x; idx < NP * NP; idx += blockDim.x) {
+                int ip = idx / NP, jp = idx % NP;
+                s_work[idx] = (ip < N && jp < N) ? t[ip*N*N + jp*N + kp] : 0.0;
+            }
+            __syncthreads();
+
+            // --- Phase 1: u = c^T @ t_slice ---
+            // col_major load of s_c gives c^T as matrix_a
+            FragAcc u_frag;
+            rocwmma::fill_fragment(u_frag, 0.0);
+            for (int kt = 0; kt < KT; ++kt) {
+                FragA1 a_frag;  FragB1 b_frag;
+                rocwmma::load_matrix_sync(a_frag,
+                    s_c    + wm*WM    + kt*WK*NP, NP);  // c^T tile (wm, kt)
+                rocwmma::load_matrix_sync(b_frag,
+                    s_work + kt*WK*NP + wn*WN,    NP);  // t tile (kt, wn)
+                rocwmma::mma_sync(u_frag, a_frag, b_frag, u_frag);
+            }
+            rocwmma::store_matrix_sync(s_work + wm*WM*NP + wn*WN,
+                                        u_frag, NP, rocwmma::mem_row_major);
+            __syncthreads();
+
+            // --- Phase 2: w = u @ c ---
+            FragAcc w_frag;
+            rocwmma::fill_fragment(w_frag, 0.0);
+            for (int kt = 0; kt < KT; ++kt) {
+                FragA2 a_frag;  FragB2 b_frag;
+                rocwmma::load_matrix_sync(a_frag,
+                    s_work + wm*WM*NP + kt*WK, NP);   // u tile (wm, kt)
+                rocwmma::load_matrix_sync(b_frag,
+                    s_c    + kt*WK*NP + wn*WN, NP);   // c tile (kt, wn)
+                rocwmma::mma_sync(w_frag, a_frag, b_frag, w_frag);
+            }
+            rocwmma::store_matrix_sync(s_work + wm*WM*NP + wn*WN,
+                                        w_frag, NP, rocwmma::mem_row_major);
+            __syncthreads();
+
+            // --- Phase 3: acc[p][k-k0] += w[i,j] * c[kp, k] for k in [k0, k1) ---
+            for (int p = 0; p < PAIRS; ++p) {
+                int ij = threadIdx.x + p * (int)blockDim.x;
+                if (ij < NP * NP) {
+                    int i = ij / NP, j = ij % NP;
+                    if (i < N && j < N) {
+                        double w_ij = s_work[ij];
+                        for (int k = k0; k < k1; ++k)
+                            acc[p][k - k0] += w_ij * s_c[kp * NP + k];
+                    }
+                }
+            }
+            __syncthreads();
+
+        } // end kp loop
+
+        // Write this k-chunk of result to global memory
+        for (int p = 0; p < PAIRS; ++p) {
+            int ij = threadIdx.x + p * (int)blockDim.x;
+            if (ij < NP * NP) {
+                int i = ij / NP, j = ij % NP;
+                if (i < N && j < N)
+                    for (int k = k0; k < k1; ++k)
+                        result[i*N*N + j*N + k] = acc[p][k - k0];
+            }
+        }
+
+    } // end kchunk loop
 }
 
+// Dispatch
+
+__device__
+void transform(double* result, const double* t, const double* c,
+                      int n, hipStream_t stream = nullptr)
+{
+  // Launches one block; grid = 1 since this is a single-transform kernel.
+  // For batched transforms, grid > 1 and pass a stride/batch index.
+  #define LAUNCH(NN) \
+      transform3d_rocwmma<NN>(result, t, c)
+
+  switch (n) {
+    case  6: LAUNCH( 6); break;   case  8: LAUNCH( 8); break;
+    case 10: LAUNCH(10); break;   case 12: LAUNCH(12); break;
+    case 16: LAUNCH(16); break;   case 20: LAUNCH(20); break;
+    case 24: LAUNCH(24); break;   case 32: LAUNCH(32); break;
+    default: /* fallback to scalar kernel */ break;
+  }
+  #undef LAUNCH
+}
 
 #else // __HIP_DEVICE_COMPILE__
 
