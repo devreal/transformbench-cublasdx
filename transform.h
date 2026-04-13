@@ -1,6 +1,7 @@
 #ifndef HAVE_TRANSFORM_H
 #define HAVE_TRANSFORM_H
 
+#include <assert.h>
 #include "util.h"
 #include "mxm_cublasdx.h"
 #include "mxm.h"

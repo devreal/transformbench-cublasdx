@@ -41,8 +41,8 @@ transform3d_rocwmma(double* __restrict__ result,
     constexpr int KCHUNKS = C<N>::KCHUNKS;
     constexpr int PAIRS  = C<N>::PAIRS;
     extern __shared__ double shared_mem[];  // dynamically allocated shared memory
-    extern __shared__ double s_c   = shared_mem;  // transform matrix, permanent
-    extern __shared__ double s_work = shared_mem + NP * NP;  // reused: t-slice → u → w
+    double *s_c   = shared_mem;  // transform matrix, permanent
+    double *s_work = shared_mem + NP * NP;  // reused: t-slice → u → w
 
     // Phase 1: A = c^T via col_major load of c (transposes it)
     using FragA1 = rocwmma::fragment<rocwmma::matrix_a,   WM, WN, WK, double, rocwmma::col_major>;
@@ -163,10 +163,13 @@ void transform3d(int n, const double* t, const double* c, double* result, double
   #undef LAUNCH
 }
 
-#else // __HIP_DEVICE_COMPILE__
+#endif // __HIP_DEVICE_COMPILE__
+
+__device__
+void transform3d(int n, const double* t, const double* c, double* result, double* workspace);
 
 template <typename T>
-LAUNCH_BOUNDS(MAX_THREADS_PER_BLOCK, 4)
+LAUNCH_BOUNDS(1024, 4)
 __global__ void transform_kernel_level5(int nfuncs, int K,
                                         const T* A, const T* B, T* C, T* workspace) {
   const int K2NDIM = K * K * K;
@@ -194,6 +197,7 @@ __global__ void transform_kernel_level5(int nfuncs, int K,
   └─────────┴────────────┴────────────┘
  */
 
+template<typename T>
 inline Dim3 transform_level5_thread_num(size_type K) {
   switch (K) {
     case  6: return {384, 1, 1};   case  8: return {512, 1, 1};
@@ -214,7 +218,7 @@ inline void submit_transform_level5_bench(int nfuncs, int nblocks, int K,
                                           const T* a, const T* b, T* c, T* workspace,
                                           Stream stream)
   {
-  Dim3 thread_dims = transform_level5_thread_num(K);
+  Dim3 thread_dims = transform_level5_thread_num<T>(K);
   int smem_size = transform_level5_shmem_size<T>(K);
   CONFIGURE_KERNEL(transform_kernel_level5<T>, smem_size);
   CALL_KERNEL(transform_kernel_level5<T>, std::min(nfuncs, nblocks),
@@ -222,5 +226,3 @@ inline void submit_transform_level5_bench(int nfuncs, int nblocks, int K,
               (nfuncs, K, a, b, c, workspace));
 }
 
-
-#endif // __HIP_DEVICE_COMPILE__

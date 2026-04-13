@@ -7,16 +7,18 @@
 #include "transform_level2.h"
 #include "transform_level3.h"
 #include "transform_level4.h"
+#include "transform_level5.h"
 #include "mxm_cublasdx.h"
 #include "util.h"
 
 /**
  * Optimization levels:
+ *   0 - Default
  *   1 - L1: thread-parallel over j, serial k-loop, all global memory (mxm.h fallback)
  *   2 - L2: B in LDS, threads distributed over rows
  *   3 - L3: B in LDS + register accumulation (acc[K] in VGPRs)
  *   4 - L4: AMD MFMA (GFX90A/GFX940) for K=16,32; falls back to L3 elsewhere
- *   5 - L5: cuBLASDx (NVIDIA only, double-buffered block GEMM with Tensor Cores)
+ *   5 - L5: transform3d
  */
 
 template<typename T>
@@ -33,20 +35,13 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
     CREATE_STREAM(&streams[i]);
   }
 
-  /* Warn early if a level is unavailable */
-  if (level == 5 && !MRA_HAVE_CUBLASDX) {
-    std::cerr << "Warning: level 5 (cuBLASDx) requested but not available; "
-                 "falling back to level 1\n";
-    level = 1;
-  }
-
   const char* level_names[] = {
-    "",           /* unused [0] */
+    "Default",           /* unused [0] */
     "L1-global",  /* 1 */
     "L2-lds_b",   /* 2 */
     "L3-regblk",  /* 3 */
     "L4-mfma",    /* 4 */
-    "L5-cublasdx" /* 5 */
+    "L5-transform3-rocwmma" /* 5 */
   };
 
   /* Print shmem and thread dims for this level */
@@ -161,7 +156,7 @@ int main(int argc, char **argv) {
             << " N=" << N
             << " K=" << K
             << " M=" << M
-            << " level=" << (level <= 0 ? (MRA_HAVE_CUBLASDX ? 5 : 3) : level)
+            << " level=" << level
             << std::endl;
 
   transform_bench<double>(nreps, ntasks, N, M, K, level, num_streams);
