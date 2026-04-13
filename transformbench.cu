@@ -40,11 +40,6 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
     level = 1;
   }
 
-  /* Resolve default level */
-  if (level <= 0) {
-    level = (MRA_HAVE_CUBLASDX) ? 5 : 3;
-  }
-
   const char* level_names[] = {
     "",           /* unused [0] */
     "L1-global",  /* 1 */
@@ -58,6 +53,10 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
   int smem_size = 0;
   Dim3 thread_dims = {1, 1, 1};
   switch (level) {
+    case 0:
+      smem_size   = transform_cublasdx_shmem_size<T>(K);
+      thread_dims = mra::mTxmq_blockdim<T>(K);
+      break;
     case 1:
       smem_size   = mra::mTxmq_shmem_size<T>(K);
       thread_dims = mra::mTxmq_blockdim<T>(K);
@@ -75,9 +74,14 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
       thread_dims = mra::mTxmq_level4_blockdim<T>(K);
       break;
     case 5:
-      smem_size   = transform_cublasdx_shmem_size<T>(K);
-      thread_dims = mra::mTxmq_blockdim<T>(K);
+      smem_size   = transform_level5_shmem_size<T>(K);
+      thread_dims = transform_level5_thread_num<T>(K);
       break;
+  }
+
+  // check correctness by comparing against base case (level 1)
+  if (level > 1) {
+    submit_transform_bench(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
   }
 
   std::chrono::time_point<std::chrono::high_resolution_clock> beg, end;
@@ -86,6 +90,9 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
     beg = std::chrono::high_resolution_clock::now();
     for (int t = 0; t < ntasks; ++t) {
       switch (level) {
+        case 0:
+          submit_transform_cublasdx_bench<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
+          break;
         case 1:
           submit_transform_bench(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
           break;
@@ -99,7 +106,7 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
           submit_transform_level4_bench<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
           break;
         case 5:
-          submit_transform_cublasdx_bench<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
+          submit_transform_level5_bench<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
           break;
       }
     }
