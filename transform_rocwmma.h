@@ -119,6 +119,12 @@ __device__ void transform_rocwmma_k(
     FragmentA a_frags[frags_per_wave];
     FragmentAcc acc_frags[frags_per_wave];
 
+    auto write_back_frag = [&](int frag_idx, T* c_ptr) {
+      // write the given fragment back to shared memory, transposing from row-major to col-major
+      rocwmma::store_matrix_sync(c_ptr + (frag_idx + wave_id * frags_per_wave) * K * K,
+                                acc_frags[frag_idx], K);
+    };
+
     for (int d = 0; d < ndim; ++d) {
       /* load all wavefront fragments */
       for (int i = 0; i < frags_per_wave; ++i)
@@ -134,24 +140,21 @@ __device__ void transform_rocwmma_k(
         }
         rocwmma::fill_fragment(acc_frags[i], static_cast<T>(0));
         rocwmma::mma_sync(acc_frags[i], a_frags[i], b_frag, acc_frags[i]);
+        if (d == 0 && ndim > 1) {
+          // write back the first result to shared memory for the next iteration to read
+          write_back_frag(i, shmem);
+        } else if (d == ndim-1) {
+          // last iteration, write back to global memory
+          write_back_frag(i, c);
+        }
       }
 
-      /* write back all fragments */
-      if (d == ndim - 1) {
-        /* last iteration, write back to global memory */
-        for (int i = 0; i < frags_per_wave; ++i)
-        {
-          rocwmma::store_matrix_sync(c + (i + wave_id * frags_per_wave) * K * K,
-                                    acc_frags[i], K);
-        }
-      } else {
-        /* wait for all fragments to be loaded from shared memory */
+      if (d > 0 && d < ndim - 1) {
+        // wait for all fragments to be loaded from shared memory before the next iteration
         rocwmma::synchronize_workgroup();
-        /* write back to shared memory */
-        for (int i = 0; i < frags_per_wave; ++i)
-        {
-          rocwmma::store_matrix_sync(shmem + (i + wave_id * frags_per_wave) * K * K,
-                                    acc_frags[i], K);
+        // write back the result to shared memory for the next iteration to read
+        for (int i = 0; i < frags_per_wave; ++i) {
+          write_back_frag(i, shmem);
         }
       }
 
