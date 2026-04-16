@@ -78,7 +78,7 @@ __device__ void transform_rocwmma_k(
 {
   constexpr uint32_t WM = 16, WN = 16, WK = 16;
   constexpr uint32_t WAVE = 64;   // CDNA wavefront size
-  constexpr const int ndim = 3; // fixed for benchmark
+  constexpr const int ndim = 2; // fixed for benchmark
 
   using FragmentA = rocwmma::fragment<rocwmma::matrix_a, K, K, K, T, rocwmma::col_major>;
   using FragmentB = rocwmma::fragment<rocwmma::matrix_b, K, K, K, T, rocwmma::row_major>;
@@ -107,14 +107,12 @@ __device__ void transform_rocwmma_k(
     rocwmma::load_matrix_sync(b_frag, b, K);
 
     /* load A into shared memory */
-    for (int idx = thread_id(); idx < K * K; idx += block_size()) {
-      shmem[idx] = a[idx];
-    }
-    __syncthreads();
 
     /* every wavefront handles 4 fragments */
     FragmentA a_frags[frags_per_wave];
     FragmentAcc acc_frags[frags_per_wave];
+
+    const T* a_ptr = a;
 
     for (int d = 0; d < ndim; ++d) {
       /* load all wavefront fragments */
@@ -122,37 +120,57 @@ __device__ void transform_rocwmma_k(
       {
         /* load the current fragment */
         //if (i < frags_per_wave - 1 || frags_per_wave == 1) {
-          const T* c_ptr = (d == 0) ? c : shmem;
-          rocwmma::load_matrix_sync(a_frags[i], c_ptr + (i + wave_id * frags_per_wave) * K, K*K);
+          //const T* c_ptr = (d == 0) ? a : shmem;
+	  rocwmma::synchronize_workgroup();
+          rocwmma::load_matrix_sync(a_frags[i], a_ptr + (i + wave_id * frags_per_wave) * K, K*K);
           // TODO: is it worth prefetching the next fragment?
           //if constexpr (frags_per_wave > 1) {
           //  rocwmma::load_matrix_sync(a_frags[i+1], shmem + (i+1 + wave_id * frags_per_wave) * K, K*K);
           //}
         //}
         rocwmma::fill_fragment(acc_frags[i], static_cast<T>(0));
+        rocwmma::synchronize_workgroup();
         rocwmma::mma_sync(acc_frags[i], a_frags[i], b_frag, acc_frags[i]);
       }
 
+      // superfluous sync
+      rocwmma::synchronize_workgroup();
+
       /* write back all fragments */
-      if (d == ndim - 1) {
-        /* last iteration, write back to global memory */
-        for (int i = 0; i < frags_per_wave; ++i)
-        {
-          rocwmma::store_matrix_sync(c + (i + wave_id * frags_per_wave) * K * K,
-                                    acc_frags[i], K);
-        }
-      } else {
-        /* wait for all fragments to be loaded from shared memory */
-        rocwmma::synchronize_workgroup();
-        /* write back to shared memory */
-        for (int i = 0; i < frags_per_wave; ++i)
-        {
-          rocwmma::store_matrix_sync(shmem + (i + wave_id * frags_per_wave) * K * K,
-                                    acc_frags[i], K);
+      // A: ENABLE THIS TO WRITE/READ FROM SHARED MEMORY except for the last iteration
+      T* c_ptr = (d == ndim-1) ? c : shmem;
+      // B: ENABLE THIS TO WRITE/READ FROM GLOBAL MEMORY
+      //T* c_ptr = c;
+
+      // for the next iteration
+      a_ptr = c_ptr;
+      // TODO: need a sync here?
+      for (int i = 0; i < frags_per_wave; ++i)
+      {
+        if (thread_id()%WAVE == 0) printf("WAVE %d fragment %d GMEM at offset %d\n", wave_id, i, (i + wave_id * frags_per_wave) * K * K);
+        rocwmma::store_matrix_sync(c_ptr + (i + wave_id * frags_per_wave) * K * K,
+                                   acc_frags[i], K);
+      }
+
+      rocwmma::synchronize_workgroup();
+      __syncthreads();
+
+      /**
+       * With Option A, we see the wrong result at the end of the first iteration. (all element 16)
+       * With Option B, we see the correct result at the end of the first iteration.
+       */
+      if (thread_id() == 0) {
+        for (int i = 0; i < K; ++i) {
+          for (int j = 0; j < K; ++j) {
+            for (int k = 0; k < K; ++k) {
+              printf("c[%d,%d,%d] = %f\n", i, j, k, c_ptr[i * K * K + j * K + k]);
+            }
+          }
         }
       }
 
       rocwmma::synchronize_workgroup();
+
     }
   }
 }

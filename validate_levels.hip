@@ -31,6 +31,7 @@
 #else
 #  include "transform_cublasdx.h" // L5 — cuBLASDx (NVIDIA only)
 #endif
+#include "transform_rocwmma.h"
 #include "transform_kron.h"     // L6
 
 template <typename T>
@@ -42,8 +43,12 @@ void test_level(int level, int K, int nfuncs) {
     std::vector<T> h_A(nfuncs * K3), h_B(K * K);
     std::vector<T> h_Cref(nfuncs * K3), h_Ctest(nfuncs * K3);
     std::srand(42);
-    for (auto& v : h_A) v = (T)std::rand() / RAND_MAX;
-    for (auto& v : h_B) v = (T)std::rand() / RAND_MAX;
+    //for (auto& v : h_A) v = (T)std::rand() / RAND_MAX;
+    for (auto& v : h_A) v = (T)1;
+    //for (int i = 0; i < K; ++i) for (int j = 0; j < K; ++j) for (int k = 0; k < K; ++k) h_A[i*K*K + j*K + k] = j;
+    //for (auto& v : h_B) v = (T)std::rand() / RAND_MAX;
+    for (auto& v : h_B) v = (T)1;
+    //for (int i = 0; i < K; ++i) h_B[i*K+i] = 1;
 
     // Device allocations
     T *d_A, *d_B, *d_Cref, *d_Ctest, *d_workspace_ref, *d_workspace;
@@ -123,6 +128,7 @@ void test_level(int level, int K, int nfuncs) {
     MEMCPY_D2H(h_Cref.data(),  d_Cref,  nfuncs * K3 * sizeof(T));
     MEMCPY_D2H(h_Ctest.data(), d_Ctest, nfuncs * K3 * sizeof(T));
 
+    std::cout << "expected[0] = " << h_Cref[0] << std::endl;
     // Compare
     T max_abs_err = 0, max_rel_err = 0;
     for (int i = 0; i < nfuncs * K3; ++i) {
