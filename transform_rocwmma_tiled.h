@@ -3,6 +3,7 @@
 
 #include "util.h"
 #include "mxm.h"
+#include "transform_rocwmma.h"
 
 #define ROCWMMA_NUM_THREADS 256
 #define ROCWMMA_TILE_K 4 // tiling factor along K dimension for K >= 16
@@ -13,9 +14,10 @@ struct RocWMMAConfig {
       if (K == 16) return 16; // used for K = 16
       else return 4; // use 4 for K = 20 & 24
   };
+  static constexpr uint32_t WAVE = 64;   // CDNA wavefront size
   static constexpr int M = K*K;
   static constexpr int N = K;
-  static constexpr int TileM = get_mn(K); // elements per tile in M dimension
+  static constexpr int TileM = get_mn(); // elements per tile in M dimension
   static constexpr int TileN = TileM; // square tiles
   static constexpr int TileK = ROCWMMA_TILE_K; // tile by 4 along the reduction dimension K, to increase reuse of A and B fragments
   static constexpr int FragsK = K / TileK; // number of tiles along K dimension
@@ -39,59 +41,6 @@ struct RocWMMAConfig {
 #include <hip/hip_runtime.h>
 #include <rocwmma/rocwmma.hpp>
 
-
-template <size_type K, typename T>
-__device__ void transform_klt16(
-    const T* a,
-    const T* b,
-    T*& c)
-{
-  /* hold everything in shared memory */
-  extern __shared__ char smem[];
-  T* shmem = reinterpret_cast<T*>(smem);
-  T* b_shmem = shmem;
-  T* a_shmem = b_shmem + K * K;
-  T* c_shmem = a_shmem + K * K * K;
-
-  const size_type tid = thread_id();
-  const size_type num_threads = block_size();
-
-  /* load A and B into shared memory */
-  for (int idx = tid; idx < K * K; idx += num_threads) {
-    b_shmem[idx] = b[idx];
-  }
-  for (int idx = tid; idx < K * K * K; idx += num_threads) {
-    a_shmem[idx] = a[idx];
-  }
-  __syncthreads();
-
-  for (int d = 0; d < 3; ++d) {
-    /* compute c = a * b, with c also in shared memory */
-    for (int i = tid/K; i < K * K; i += num_threads/K) {
-      T* ci = c_shmem + i * K;
-      int j = tid % K;
-      T sum = 0;
-      for (long k = 0; k < K; ++k) { /* not parallelized */
-        sum += a_shmem[k * K * K + i] * b_shmem[k * K + j];
-      }
-      if (d == 0) {
-        ci[j] = sum;
-      } else {
-        ci[j] += sum;
-      }
-    }
-    __syncthreads();
-
-    /* swap A and C for the next iteration, so we always read from A and write to C */
-    std::swap(a_shmem, c_shmem);
-   }
-
-   // write back result to global memory
-   for (int idx = tid; idx < K * K * K; idx += num_threads) {
-     c[idx] = a_shmem[idx]; // a_shmem is the final result after 3 iterations
-   }
-}
-
 /**
  * This implementation is for K 16, 20, 24. We split the K dimension into tiles of size 4 or 8.
  * We split the K dimension into smaller tiles. The number of K tiles determines the number of superblocks
@@ -111,8 +60,6 @@ __device__ void transform_rocwmma_tiled_k(
     T*& c,
     T* workspace)
 {
-  constexpr uint32_t WM = 16, WN = 16, WK = 16;
-  constexpr uint32_t WAVE = 64;   // CDNA wavefront size
   constexpr const int ndim = 3; // fixed for benchmark
 
   if constexpr (K < 16) {
@@ -126,6 +73,7 @@ __device__ void transform_rocwmma_tiled_k(
   } else {
 
     using Config = RocWMMAConfig<K,T>;
+    constexpr uint32_t WAVE = Config::WAVE;   // CDNA wavefront size
     constexpr int M = Config::M;
     constexpr int N = Config::N;
     constexpr int TileM = Config::TileM; // elements per tile in M dimension
@@ -323,7 +271,7 @@ inline int transform_rocwmma_tiled_shmem_size(int K) {
 }
 
 template <typename T>
-inline Dim3 transform_rocwmma_blockdim(int K) {
+inline Dim3 transform_rocwmma_tiled_blockdim(int K) {
   return {ROCWMMA_NUM_THREADS, 1, 1};
 }
 

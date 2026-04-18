@@ -4,7 +4,7 @@
 #include "util.h"
 #include "mxm.h"
 
-#define ROCWMMA_NUM_THREADS 256
+#define ROCWMMA_NUM_THREADS 512
 
 #if defined(__HIP_DEVICE_COMPILE__)
 #include <hip/hip_runtime.h>
@@ -233,6 +233,8 @@ inline void submit_transform_rocwmma_bench(int nfuncs, int nblocks, int K,
   }
 #undef DISPATCH_L3
 }
+
+#undef ROCWMMA_NUM_THREADS
 
 
 #endif // HAVE_TRANSFORM_ROCWMMA_H
