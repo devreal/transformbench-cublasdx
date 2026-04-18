@@ -19,14 +19,14 @@ struct RocWMMAConfig {
   static constexpr int N = K;
   static constexpr int TileM = get_mn(); // elements per tile in M dimension
   static constexpr int TileN = TileM; // square tiles
-  static constexpr int TileK = ROCWMMA_TILE_K; // tile by 4 along the reduction dimension K, to increase reuse of A and B fragments
+  static constexpr int TileK = ROCWMMA_TILE_K; // tiling along the reduction dimension K, to increase reuse of A and B fragments
   static constexpr int FragsK = K / TileK; // number of tiles along K dimension
   static constexpr int FragsM = M / TileM; // number of tiles along M dimension
   static constexpr int FragsN = N / TileN; // number of tiles along N dimension
   static constexpr int NumWaves = ROCWMMA_NUM_THREADS / WAVE;
   static constexpr int FragsPerWaveM = FragsM / NumWaves; // number of M tiles (output tiles) computed per wavefront
   static constexpr int FragsPerWaveN = FragsN / NumWaves; // number of N tiles computed per wavefront
-  static constexpr int SuperBlocksM = M / (TileM * FragsPerWaveM); // number of super-blocks along M dimension
+  static constexpr int SuperBlocksM = FragsK; // number of super-blocks along M dimension, same as K tiling
   static constexpr int FragsPerSuperBlockM = FragsM / SuperBlocksM; // number of M tiles in a super-block
   static constexpr int FragsPerWaveSuperBlockM = FragsPerWaveM / SuperBlocksM; // number of M tiles in a super-block
 
@@ -107,7 +107,7 @@ __device__ void transform_rocwmma_tiled_k(
     // takes the super block index, the wave-local fragment index in M dimension, and the K tile index
     auto a_frag_offset = [&](int sb, int local_m, int k) {
       // load from memory in [k, m] order, with layout [K, K^2]
-      return ((sb * FragsPerSuperBlockM + local_m+NumWaves) * TileM + k * K*K);
+      return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K);
     };
 
     auto b_frag_offset = [&](int k, int n) {
@@ -119,7 +119,7 @@ __device__ void transform_rocwmma_tiled_k(
     // for shared memory, use sb = 0
     auto c_frag_offset = [&](int sb, int local_m, int n) {
       // store to memory in [m, n] order, with layout [K^2, K]
-      return ((sb * FragsPerSuperBlockM + local_m+NumWaves) * TileM * N + n * TileN);
+      return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM * N + n * TileN);
     };
 
     // load all b into wave 0 registers and store them back to shared memory
@@ -225,7 +225,7 @@ __device__ void transform_rocwmma_tiled_k(
       }
     }
 
-    // wait for all waves to finish to global memory before returning
+    // wait for all waves to finish writing to global memory before returning
     rocwmma::synchronize_workgroup();
 
   }
