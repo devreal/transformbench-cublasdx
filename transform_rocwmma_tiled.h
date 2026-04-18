@@ -160,7 +160,7 @@ __device__ void transform_rocwmma_tiled_k(
 
     // main loop: iterate over dimensions
     for (int d = 0; d < ndim; ++d) {
-      T c_ptr = (d == ndim-1) ? c : shmem; // write to global memory if it's the last iteration, otherwise write to shared memory for the next iteration
+      T *c_ptr = (d == ndim-1) ? c : shmem; // write to global memory if it's the last iteration, otherwise write to shared memory for the next iteration
       // iterate over super-blocks in M dimension
       for (int sb = 0; sb < SuperBlocksM; ++sb) {
         // compute the whole super-block
