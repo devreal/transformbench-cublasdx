@@ -25,7 +25,7 @@ struct RocWMMAConfig {
   static constexpr int FragsN = N / TileN; // number of tiles along N dimension
   static constexpr int NumWaves = ROCWMMA_NUM_THREADS / WAVE;
   static constexpr int FragsPerWaveM = FragsM / NumWaves; // number of M tiles (output tiles) computed per wavefront
-  static constexpr int FragsPerWaveN = FragsN / NumWaves; // number of N tiles computed per wavefront
+  static constexpr int FragsPerWaveN = FragsN; // no wave distribution along N dimension
   static constexpr int SuperBlocksM = FragsK; // number of super-blocks along M dimension, same as K tiling
   static constexpr int FragsPerSuperBlockM = FragsM / SuperBlocksM; // number of M tiles in a super-block
   static constexpr int FragsPerWaveSuperBlockM = FragsPerWaveM / SuperBlocksM; // number of M tiles in a super-block
@@ -148,7 +148,7 @@ __device__ void transform_rocwmma_tiled_k(
       }
     }
 
-    // start loading all of A into registers
+    // start loading all of A from global memory into registers
     for (int sb = 0; sb < SuperBlocksM; ++sb) {
       for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
         for (int k = 0; k < FragsK; ++k) {
@@ -212,13 +212,13 @@ __device__ void transform_rocwmma_tiled_k(
         }
 
         if (d < ndim-1) {
-          // wait for all waves to finish writing the super-block before we read it back in the next iteration
+          // wait for all waves to finish writing the super-block before we read it back for the next iteration
           rocwmma::synchronize_workgroup();
           // read the tiles in column sb back into registers for the next iteration
           for (int sbx = 0; sbx < SuperBlocksM; ++sbx) {
             for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
               T* a_ptr = shmem + a_frag_offset(0, m, sb);
-              rocwmma::load_matrix_sync(acc_frags[sbx][m][sb], a_ptr, K*K); // load the super-block of C back from shared memory for the next iteration
+              rocwmma::load_matrix_sync(a_frags[sbx][m][sb], a_ptr, K*K); // load the super-block of C back from shared memory for the next iteration
             }
           }
         }
