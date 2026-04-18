@@ -174,7 +174,7 @@ __device__ void transform_rocwmma_tiled_k(
             }
             // we have already computed with columns 0..sb-1 of A and loaded them back from shared memory for the next iteration
             // so start at an offset
-            for (int k = sb; k < FragsPerWaveK; ++k) {
+            for (int k = sb; k < FragsK; ++k) {
               rocwmma::mma_sync(acc, a_frags[sb][m][k], b_frags[k][n], acc);
             }
           }
