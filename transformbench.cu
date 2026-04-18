@@ -9,6 +9,7 @@
 #include "transform_level4.h"
 #include "transform_level5.h"
 #include "transform_rocwmma.h"
+#include "transform_rocwmma_tiled.h"
 #include "transform_level7.h"
 #include "transform_kron.h"
 #include "mxm_cublasdx.h"
@@ -21,7 +22,10 @@
  *   3 - L3: B in LDS + register accumulation (acc[K] in VGPRs)
  *   4 - L4: AMD MFMA (GFX90A/GFX940) for K=16,32; falls back to L3 elsewhere
  *   5 - L5: cuBLASDx (NVIDIA only, double-buffered block GEMM with Tensor Cores)
- *   6 - L6: Single GEMM via K³×K³ Kronecker product (B^T ⊗ B^T ⊗ B^T)
+ *   6 - L6a: using rocWMMA (AMD only, GFX90A/GFX940)
+ *   7 - L7: using Clang built-ins (AMD only)
+ *   8 - L8: Single GEMM via K³×K³ Kronecker product (B^T ⊗ B^T ⊗ B^T)
+ *   9 - L9: hand-tiled version of L6 with lower LDS usage for better occupancy (AMD only)
  */
 
 template<typename T>
@@ -59,7 +63,8 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
     "L5",/* 5 */
     "L6-rocwmma",/* 6 */
     "L7-builtins",/* 7 */
-    "L8-kron"     /* 8 */
+    "L8-kron",     /* 8 */
+    "L9-rocwmma-tiled" /* 9 */
   };
 
   /* Print shmem and thread dims for this level */
@@ -97,6 +102,10 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
     case 8:
       smem_size   = kron_shmem_size<T>(K);
       thread_dims = kron_blockdim(K);
+      break;
+    case 9:
+      smem_size   = transform_rocwmma_tiled_shmem_size<T>(K);
+      thread_dims = transform_rocwmma_tiled_blockdim<T>(K);
       break;
   }
 
@@ -143,6 +152,9 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
           break;
         case 8:
           submit_transform_kron_bench<T>(nfuncs, K, A, KronMat, C, blas_handle, streams[t%num_streams]);
+          break;
+        case 9:
+          submit_transform_rocwmma_tiled_bench<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
           break;
       }
     }

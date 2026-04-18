@@ -106,6 +106,10 @@ void test_level(int level, int K, int nfuncs) {
             SYNC_STREAM(stream);
             blasDestroy(blas_handle);
             break;
+        case 9:
+            submit_transform_rocwmma_tiled_bench<T>(nfuncs, nblocks, K, d_A, d_B, d_Ctest, d_workspace, stream);
+            SYNC_STREAM(stream);
+            break;
         }
         default:
             std::cerr << "Unknown level " << level << " (valid: 2-7)\n";
