@@ -45,7 +45,9 @@ void test_level(int level, int K, int nfuncs) {
     std::vector<T> h_Cref(nfuncs * K3), h_Ctest(nfuncs * K3);
     std::srand(42);
     //for (auto& v : h_A) v = (T)std::rand() / RAND_MAX;
-    for (auto& v : h_A) v = 1;
+    int i = 0;
+    //for (auto& v : h_A) v = i++/1000.;
+    for (auto& v : h_A) v = i++ ;
     //for (auto& v : h_B) v = (T)std::rand() / RAND_MAX;
     for (auto& v : h_B) v = 1;
 

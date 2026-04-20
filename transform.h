@@ -32,6 +32,7 @@ __device__ void transform(
   for (int i = thread_id(); i < K*K; i += block_size()) b_shm[i] = b[i];
   const T* pc = b_shm;
   T *t0=workspace, *t1=c;
+  if (ndim % 2 == 0) std::swap(t0, t1);
   //std::swap(t0,t1);
     auto tmp = t0;
     t0 = t1;

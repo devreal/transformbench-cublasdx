@@ -60,7 +60,7 @@ __device__ void transform_rocwmma_tiled_k(
     T*& c,
     T* workspace)
 {
-  constexpr const int ndim = 2; // fixed for benchmark
+  constexpr const int ndim = 1; // fixed for benchmark
 
   if constexpr (K < 16) {
     // Fallback to non mma implementation
@@ -107,6 +107,7 @@ __device__ void transform_rocwmma_tiled_k(
     // takes the super block index, the wave-local fragment index in M dimension, and the K tile index
     auto a_frag_offset = [&](int sb, int local_m, int k) {
       // load from memory in [k, m] order, with layout [K, K^2]
+      if (thread_id() == 0) printf("a_frag_offset(%d, %d, %d) -> %d\n", sb, local_m, k, ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K));
       return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K);
     };
 
@@ -119,6 +120,7 @@ __device__ void transform_rocwmma_tiled_k(
     // for shared memory, use sb = 0
     auto c_frag_offset = [&](int sb, int local_m, int n) {
       // store to memory in [m, n] order, with layout [K^2, K]
+      if (thread_id() == 0) printf("c_frag_offset(%d, %d, %d) -> %d\n", sb, local_m, n, ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM * N + n * TileN));
       return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM * N + n * TileN);
     };
 
@@ -154,7 +156,12 @@ __device__ void transform_rocwmma_tiled_k(
     for (int sb = 0; sb < SuperBlocksM; ++sb) {
       for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
         for (int k = 0; k < FragsK; ++k) {
-          const T* a_ptr = a + a_frag_offset(sb, m, k);
+          //const T* a_ptr = a + a_frag_offset(sb, m, k);
+	  // ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K)
+	  //((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K)
+	  //const T* a_ptr = a + (sb*FragsPerSuperBlockM + wave_id + local_m*NumWaves)*TileM + k*K;
+	  //const T* a_ptr = a + c_frag_offset(sb, m, k);
+	  const T* a_ptr = a + ((sb * FragsPerSuperBlockM + wave_id + m*NumWaves) * TileM + k * K*K);
           rocwmma::load_matrix_sync(a_frags[sb][m][k], a_ptr, K*K);
         }
       }
@@ -163,21 +170,28 @@ __device__ void transform_rocwmma_tiled_k(
 
     // wait for all waves to finish writing to global memory before returning
     rocwmma::synchronize_workgroup();
-    if (thread_id() == 0) {
       for (int sb = 0; sb < SuperBlocksM; ++sb) {
         for (int i = 0; i < FragsPerWaveSuperBlockM; ++i) {
           for (int j = 0; j < FragsK; ++j) {
-            //printf("INITIAL super-block %d, tile m=%d, n=%d, a[0] = %f\n", sb, i, j, a_frags[sb][i][j].x[0]);
+	   T *a_ptr = shmem + ((sb * FragsPerSuperBlockM + wave_id + i*NumWaves) * TileM * N + j*TileK);
+	   if (thread_id() == 0) printf("Writing A tile sb %d m %d n %d to %d", a_ptr - shmem);
+	   rocwmma::store_matrix_sync(a_ptr,
+                                      a_frags[sb][i][j], K); 
           }
         }
-        for (int i = 0; i < FragsK; ++i) {
-          for (int j = 0; j < FragsN; ++j) {
-            //printf("INITIAL B, tile k=%d, n=%d, b[0] = %f\n", i, j, b_frags[i][j].x[0]);
-          }
-        }
-
+        rocwmma::synchronize_workgroup();
+    	if (thread_id() == 0) {
+		printf("A sb %d\n", sb);
+        	for (int i = 0; i < K*K/ROCWMMA_TILE_K; ++i) {
+          		for (int j = 0; j < K; ++j) {
+				printf(" %6.1f", shmem[i*K+j]);
+            		//printf("INITIAL B, tile k=%d, n=%d, b[0] = %f\n", i, j, b_frags[i][j].x[0]);
+          		}
+			printf("\n");
+        	}
+      	}
+        rocwmma::synchronize_workgroup();
       }
-    }
     // wait for all waves to finish writing to global memory before returning
     rocwmma::synchronize_workgroup();
 
@@ -198,7 +212,7 @@ __device__ void transform_rocwmma_tiled_k(
           for (int sb = 0; sb < SuperBlocksM; ++sb) {
             for (int i = 0; i < FragsPerWaveSuperBlockM; ++i) {
               for (int j = 0; j < FragsK; ++j) {
-                printf("super-block %d, d %d, tile m=%d, n=%d, a[0] = %f\n", sb, d, i, j, a_frags[sb][i][j].x[0]);
+                printf("super-block %d, d %d, tile m=%d, k=%d, a[0] = %f\n", sb, d, i, j, a_frags[sb][i][j].x[0]);
 		T val = a_frags[sb][i][j].x[0];
 		for (int k = 0; k < TileM*TileK; ++k) {
 		  if (val != a_frags[sb][i][j].x[k]) {
@@ -290,17 +304,23 @@ __device__ void transform_rocwmma_tiled_k(
         // wait for every wave to have read either the B tiles (first iteration)
         // or the A tiles (subsequent iterations) before we write to shared memory
         // can skip this for the last dimension since we write to global memory and there is no reuse after this
-        if (d < ndim-1) {
+        //if (d < ndim-1) {
           rocwmma::synchronize_workgroup();
-        }
+        //}
         // write the super block back to shared memory so we can "rotate" and read in again
         for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
           for (int n = 0; n < FragsPerWaveN; ++n) {
             // write order [m, n] in shared memory, with layout [M, N]
-            rocwmma::store_matrix_sync(c_ptr + c_frag_offset((d < ndim-1) ? 0 : sb, m, n),
+            //rocwmma::store_matrix_sync(c_ptr + c_frag_offset((d < ndim-1) ? 0 : sb, m, n),
+            rocwmma::store_matrix_sync(shmem + c_frag_offset(0, m, n),
                                        acc_frags[sb][m][n], K);
           }
         }
+
+	rocwmma::synchronize_workgroup();
+
+	for (int i = thread_id(); i < K*K*K/ROCWMMA_TILE_K; i += block_size()) c[sb*K*K*K/ROCWMMA_TILE_K + i] = shmem[i];
+	rocwmma::synchronize_workgroup();
 
         // while writing to shared memory, we compute the partials using the tiles in column sb of A
         // TODO: not sure whether there is any actual overlap here
@@ -334,7 +354,19 @@ __device__ void transform_rocwmma_tiled_k(
               }
             }
           }
+	  printf("C after sb %d shmem\n", sb);
+	  for (int m = 0; m < K*K/ROCWMMA_TILE_K; ++m) {
+		  for (int n = 0; n < K; ++n) 
+			  printf(" %6.1f", shmem[m*K + n]);
+		  printf("\n");
+	  }
 
+	  printf("C after sb %d\n", sb);
+	  for (int m = 0; m < K*K; ++m) {
+		  for (int n = 0; n < K; ++n) 
+			  printf(" %6.1f", c[m*K*K + n]);
+		  printf("\n");
+	  }
 
 	}
         if (d < ndim-1) {
@@ -343,7 +375,8 @@ __device__ void transform_rocwmma_tiled_k(
           // read the tiles in column sb back into registers for the next iteration
           for (int sbx = 0; sbx < SuperBlocksM; ++sbx) {
             for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
-              T* a_ptr = shmem + a_frag_offset(0, m, sb);
+              T* a_ptr = shmem + a_frag_offset(sbx, m, 0);
+              //T* a_ptr = shmem + a_frag_offset(0, m, sb);
               rocwmma::load_matrix_sync(a_frags[sbx][m][sb], a_ptr, K*K); // load the super-block of C back from shared memory for the next iteration
             }
           }
