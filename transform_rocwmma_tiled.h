@@ -5,7 +5,7 @@
 #include "mxm.h"
 #include "transform_rocwmma.h"
 
-#define ROCWMMA_NUM_THREADS 256
+#define ROCWMMA_NUM_THREADS 64
 #define ROCWMMA_TILE_K 4 // tiling factor along K dimension for K >= 16
 
 template<size_type K, typename T>
@@ -25,7 +25,7 @@ struct RocWMMAConfig {
   static constexpr int FragsN = N / TileN; // number of tiles along N dimension
   static constexpr int NumWaves = ROCWMMA_NUM_THREADS / WAVE;
   static constexpr int FragsPerWaveM = FragsM / NumWaves; // number of M tiles (output tiles) computed per wavefront
-  static constexpr int FragsPerWaveN = FragsN; // no wave distribution along N dimension
+  static constexpr int FragsPerWaveN = FragsN; // number of N tiles computed per wavefront
   static constexpr int SuperBlocksM = FragsK; // number of super-blocks along M dimension, same as K tiling
   static constexpr int FragsPerSuperBlockM = FragsM / SuperBlocksM; // number of M tiles in a super-block
   static constexpr int FragsPerWaveSuperBlockM = FragsPerWaveM / SuperBlocksM; // number of M tiles in a super-block
@@ -60,7 +60,7 @@ __device__ void transform_rocwmma_tiled_k(
     T*& c,
     T* workspace)
 {
-  constexpr const int ndim = 3; // fixed for benchmark
+  constexpr const int ndim = 2; // fixed for benchmark
 
   if constexpr (K < 16) {
     // Fallback to non mma implementation
@@ -124,6 +124,8 @@ __device__ void transform_rocwmma_tiled_k(
 
     // load all b into wave 0 registers and store them back to shared memory
     // loading to LDS goes through registers so we might as well keep them at wave 0
+    for (int i = thread_id(); i < (2*K*K*ROCWMMA_TILE_K); i += block_size()) shmem[i] = -1111111;
+    rocwmma::synchronize_workgroup();
     if (wave_id == 0) {
       for (int k = 0; k < FragsK; ++k) {
         for (int n = 0; n < FragsN; ++n) {
@@ -148,7 +150,7 @@ __device__ void transform_rocwmma_tiled_k(
       }
     }
 
-    // start loading all of A from global memory into registers
+    // start loading all of A into registers
     for (int sb = 0; sb < SuperBlocksM; ++sb) {
       for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
         for (int k = 0; k < FragsK; ++k) {
@@ -158,12 +160,73 @@ __device__ void transform_rocwmma_tiled_k(
       }
     }
 
+
+    // wait for all waves to finish writing to global memory before returning
+    rocwmma::synchronize_workgroup();
+    if (thread_id() == 0) {
+      for (int sb = 0; sb < SuperBlocksM; ++sb) {
+        for (int i = 0; i < FragsPerWaveSuperBlockM; ++i) {
+          for (int j = 0; j < FragsK; ++j) {
+            //printf("INITIAL super-block %d, tile m=%d, n=%d, a[0] = %f\n", sb, i, j, a_frags[sb][i][j].x[0]);
+          }
+        }
+        for (int i = 0; i < FragsK; ++i) {
+          for (int j = 0; j < FragsN; ++j) {
+            //printf("INITIAL B, tile k=%d, n=%d, b[0] = %f\n", i, j, b_frags[i][j].x[0]);
+          }
+        }
+
+      }
+    }
+    // wait for all waves to finish writing to global memory before returning
+    rocwmma::synchronize_workgroup();
+
+
     // main loop: iterate over dimensions
     for (int d = 0; d < ndim; ++d) {
       T *c_ptr = (d == ndim-1) ? c : shmem; // write to global memory if it's the last iteration, otherwise write to shared memory for the next iteration
       // iterate over super-blocks in M dimension
       for (int sb = 0; sb < SuperBlocksM; ++sb) {
         // compute the whole super-block
+
+        // wait for all waves to finish writing to global memory before returning
+        rocwmma::synchronize_workgroup();
+
+        if (thread_id() == 0) {
+	  printf("d = %d, sb = %d\n", d, sb);
+
+          for (int sb = 0; sb < SuperBlocksM; ++sb) {
+            for (int i = 0; i < FragsPerWaveSuperBlockM; ++i) {
+              for (int j = 0; j < FragsK; ++j) {
+                printf("super-block %d, d %d, tile m=%d, n=%d, a[0] = %f\n", sb, d, i, j, a_frags[sb][i][j].x[0]);
+		T val = a_frags[sb][i][j].x[0];
+		for (int k = 0; k < TileM*TileK; ++k) {
+		  if (val != a_frags[sb][i][j].x[k]) {
+                  printf("DIFFERENT element at index %d: %f\n", k, a_frags[sb][i][j].x[k]);
+		  val = a_frags[sb][i][j].x[k];
+		  }
+                }
+              }
+            }
+          }
+        for (int i = 0; i < FragsK; ++i) {
+          for (int j = 0; j < FragsN; ++j) {
+            printf("B, tile k=%d, n=%d, b[0] = %f\n", i, j, b_frags[i][j].x[0]);
+	    T val = b_frags[i][j].x[0];
+	    for (int k = 0; k < TileM*TileN; ++k) {
+		if (val != b_frags[i][j].x[k]) {
+			printf("DIFFERENT element at index %d: %f\n", k, b_frags[i][j].x[k]);
+			val = b_frags[i][j].x[k];
+		}
+	    }
+          }
+        }
+
+
+        }
+        rocwmma::synchronize_workgroup();
+
+
         for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
           for (int n = 0; n < FragsPerWaveN; ++n) {
             auto& acc = acc_frags[sb][m][n];
@@ -175,7 +238,50 @@ __device__ void transform_rocwmma_tiled_k(
             // we have already computed with columns 0..sb-1 of A and loaded them back from shared memory for the next iteration
             // so start at an offset
             for (int k = sb; k < FragsK; ++k) {
-              rocwmma::mma_sync(acc, a_frags[sb][m][k], b_frags[k][n], acc);
+
+            rocwmma::synchronize_workgroup();
+	    if (thread_id() == 0) printf("MMA d %d sb %d m %d n %d k %d\n", d, sb, m, n, k);
+
+	    auto& a_frag = a_frags[sb][m][k];
+	    auto& b_frag = b_frags[k][n];
+            if (thread_id() == 0) {
+              printf("MMA BEFORE sb %d, d %d, tile m=%d, n=%d\n", sb, d, m, n);
+              printf("A: ");
+              for (int kk = 0; kk < TileM*TileK; ++kk) {
+		if (kk % TileK == 0) printf("\n");
+                printf(" %5.1f", a_frag.x[kk]);
+              }
+              printf("\nB: ");
+              for (int kk = 0; kk < TileK*TileN; ++kk) {
+		if (kk % TileN == 0) printf("\n");
+                printf(" %5.1f", b_frag.x[kk]);
+              }
+
+              printf("\nACC: ");
+              for (int kk = 0; kk < TileM*TileN; ++kk) {
+		if (kk % TileN == 0) printf("\n");
+                printf(" %5.1f", acc.x[kk]);
+              }
+              printf("\n");
+            }
+            rocwmma::synchronize_workgroup();
+	    FragmentAcc frag;
+	    rocwmma::fill_fragment(frag, static_cast<T>(0));
+              rocwmma::mma_sync(acc, a_frag, b_frag, acc);
+            rocwmma::synchronize_workgroup();
+	    if (thread_id() == 0) {
+              printf("MMA AFTER sb %d, d %d, tile m=%d, n=%d\n", sb, d, m, n);
+              printf("\nACC: ");
+              for (int kk = 0; kk < TileM*TileN; ++kk) {
+		if (kk % TileN == 0) printf("\n");
+                printf(" %5.1f", acc.x[kk]);
+              }
+              printf("\n");
+            }
+	    //acc = frag;
+
+            rocwmma::synchronize_workgroup();
+
             }
           }
         }
@@ -211,8 +317,28 @@ __device__ void transform_rocwmma_tiled_k(
           }
         }
 
+          rocwmma::synchronize_workgroup();
+        if (thread_id() == 0) {
+
+          for (int sb = 0; sb < SuperBlocksM; ++sb) {
+            for (int i = 0; i < FragsPerWaveSuperBlockM; ++i) {
+              for (int j = 0; j < FragsN; ++j) {
+                printf("super-block %d, d %d, tile m=%d, n=%d, acc[0] = %f\n", sb, d, i, j, acc_frags[sb][i][j].x[0]);
+		T val = acc_frags[sb][i][j].x[0];
+		for (int k = 0; k < TileM*TileN; ++k) {
+		  if (val != acc_frags[sb][i][j].x[k]) {
+                  printf("DIFFERENT element at index %d: %f\n", k, acc_frags[sb][i][j].x[k]);
+		  val = acc_frags[sb][i][j].x[k];
+		  }
+                }
+              }
+            }
+          }
+
+
+	}
         if (d < ndim-1) {
-          // wait for all waves to finish writing the super-block before we read it back for the next iteration
+          // wait for all waves to finish writing the super-block before we read it back in the next iteration
           rocwmma::synchronize_workgroup();
           // read the tiles in column sb back into registers for the next iteration
           for (int sbx = 0; sbx < SuperBlocksM; ++sbx) {
@@ -222,6 +348,8 @@ __device__ void transform_rocwmma_tiled_k(
             }
           }
         }
+        // wait for all waves to finish writing to global memory before returning
+        rocwmma::synchronize_workgroup();
       }
     }
 
@@ -264,7 +392,7 @@ inline int transform_rocwmma_tiled_shmem_size(int K) {
     return (K*K*K + K*K) * sizeof(T);
   } else if (K == 16) {
     // For K==16, we hold one copy of A/C in LDS
-    return (K*K*ROCWMMA_TILE_K) * sizeof(T);
+    return (2*K*K*ROCWMMA_TILE_K) * sizeof(T);
   } else {
     return transform_level3_shmem_size<T>(K);
   }
