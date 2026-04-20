@@ -84,7 +84,7 @@ endif()
 
 if (CMAKE_HIP_COMPILER)
   # Ensure ROCm cmake configs (hip, hipblas, etc.) are findable
-  list(APPEND CMAKE_PREFIX_PATH /opt/rocm-6.4.3 /opt/rocm)
+  #list(APPEND CMAKE_PREFIX_PATH /opt/rocm-6.4.3 /opt/rocm)
   find_package(hipblas REQUIRED)
 
   #target_link_libraries(libmra INTERFACE mathdx::cublasdx)

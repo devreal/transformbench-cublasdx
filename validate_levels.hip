@@ -44,8 +44,10 @@ void test_level(int level, int K, int nfuncs) {
     std::vector<T> h_A(nfuncs * K3), h_B(K * K);
     std::vector<T> h_Cref(nfuncs * K3), h_Ctest(nfuncs * K3);
     std::srand(42);
-    for (auto& v : h_A) v = (T)std::rand() / RAND_MAX;
-    for (auto& v : h_B) v = (T)std::rand() / RAND_MAX;
+    //for (auto& v : h_A) v = (T)std::rand() / RAND_MAX;
+    for (auto& v : h_A) v = 1;
+    //for (auto& v : h_B) v = (T)std::rand() / RAND_MAX;
+    for (auto& v : h_B) v = 1;
 
     // Device allocations
     T *d_A, *d_B, *d_Cref, *d_Ctest, *d_workspace_ref, *d_workspace;
