@@ -6,26 +6,34 @@
 #include "transform_rocwmma.h"
 
 #define ROCWMMA_NUM_THREADS 256
-#define ROCWMMA_TILE_K 4 // tiling factor along K dimension for K >= 16
+static constexpr int rocwmma_get_frag_mn(size_type K) {
+  if (K == 16) return 4; // used for K = 16
+  else return 4; // use 4 for K = 20 & 24
+};
+static constexpr int rocwmma_get_frag_k(size_type K) {
+  // TODO: check if we can go 8 for K 16
+  return 4;
+}
+/**
+ * Use one wave per k tile
+ */
+static constexpr int rocwmma_get_num_threads(size_type K) {
+  return K / rocwmma_get_frag_k(K) * WAVE_SIZE;
+}
 
 template<size_type K, typename T>
 struct RocWMMAConfig {
-  static constexpr int get_mn() {
-      if (K == 16) return 16; // used for K = 16
-      else return 4; // use 4 for K = 20 & 24
-  };
-  static constexpr uint32_t WAVE = 64;   // CDNA wavefront size
   static constexpr int M = K*K;
   static constexpr int N = K;
-  static constexpr int TileM = get_mn(); // elements per tile in M dimension
+  static constexpr int TileM = rocwmma_get_frag_mn(K); // elements per tile in M dimension
   static constexpr int TileN = TileM; // square tiles
-  static constexpr int TileK = ROCWMMA_TILE_K; // tiling along the reduction dimension K, to increase reuse of A and B fragments
+  static constexpr int TileK = rocwmma_get_frag_k(K); // tiling along the reduction dimension K, to increase reuse of A and B fragments
   static constexpr int FragsK = K / TileK; // number of tiles along K dimension
   static constexpr int FragsM = M / TileM; // number of tiles along M dimension
   static constexpr int FragsN = N / TileN; // number of tiles along N dimension
-  static constexpr int NumWaves = ROCWMMA_NUM_THREADS / WAVE;
+  static constexpr int NumWaves = rocwmma_get_num_threads(K) / WAVE_SIZE;
   static constexpr int FragsPerWaveM = FragsM / NumWaves; // number of M tiles (output tiles) computed per wavefront
-  static constexpr int FragsPerWaveN = FragsN; // no wave distribution along N dimension
+  static constexpr int FragsPerWaveN = FragsN; // number of N tiles computed per wavefront
   static constexpr int SuperBlocksM = FragsK; // number of super-blocks along M dimension, same as K tiling
   static constexpr int FragsPerSuperBlockM = FragsM / SuperBlocksM; // number of M tiles in a super-block
   static constexpr int FragsPerWaveSuperBlockM = FragsPerWaveM / SuperBlocksM; // number of M tiles in a super-block
@@ -66,7 +74,7 @@ __device__ void transform_rocwmma_tiled_k(
     // Fallback to non mma implementation
     transform_klt16<K, T>(a, b, c);
     return;
-  } else if constexpr (K > 16) {
+  } else if constexpr (K > 24) {
     // Not supported, fallback to Level-3
     transform_level3_k<T, K>(a, b, c, workspace);
     return;
@@ -97,6 +105,36 @@ __device__ void transform_rocwmma_tiled_k(
     FragmentA a_frags[SuperBlocksM][FragsPerWaveSuperBlockM][FragsK];
     FragmentAcc acc_frags[SuperBlocksM][FragsPerWaveSuperBlockM][FragsPerWaveN];
 
+    auto load_matrix = [&](T* dst, const T* src, int count) {
+      // load a tile of A from global memory into a fragment
+      // A is in column-major layout with shape [M, K], so the leading dimension is M
+      const double4* src4 = reinterpret_cast<const double4*>(src);
+      double4* dst4 = reinterpret_cast<double4*>(dst);
+      for (int idx = thread_id(); idx < count/4; idx += block_size()) {
+        dst4[idx] = src4[idx];
+      }
+    };
+
+
+    // write fragment to shared memory and print it for debugging
+    auto print_tile = [&](const char* name, int sb, int m, int k, auto&& frag, T* shmem_tile, size_type lda, bool transpose = false) {
+      T *a_ptr = shmem_tile;
+      rocwmma::store_matrix_sync(a_ptr, frag, lda);
+      rocwmma::synchronize_workgroup();
+      if (thread_id() == 0) {
+        printf("%s sb %d m %d k %d (%d x %d)\n", name, sb, m, k, frag.height(), frag.width());
+
+        for (int k = 0; k < frag.width() * frag.height() / lda; ++k) {
+          for (int m = 0; m < lda; ++m) {
+            printf(" %6.1f", a_ptr[m + k*lda]);
+          }
+          printf("\n");
+        }
+      }
+      rocwmma::synchronize_workgroup();
+    };
+
+
     /* single shared memory region, holds A and C */
     extern __shared__ T shmem[];
 
@@ -107,7 +145,8 @@ __device__ void transform_rocwmma_tiled_k(
     // takes the super block index, the wave-local fragment index in M dimension, and the K tile index
     auto a_frag_offset = [&](int sb, int local_m, int k) {
       // load from memory in [k, m] order, with layout [K, K^2]
-      return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K);
+      //if (thread_id() == 0) printf("a_frag_offset(%d, %d, %d) -> %d\n", sb, local_m, k, ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * K*K));
+      return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM + k * TileK * K*K);
     };
 
     auto b_frag_offset = [&](int k, int n) {
@@ -119,44 +158,42 @@ __device__ void transform_rocwmma_tiled_k(
     // for shared memory, use sb = 0
     auto c_frag_offset = [&](int sb, int local_m, int n) {
       // store to memory in [m, n] order, with layout [K^2, K]
+      //if (thread_id() == 0) printf("c_frag_offset(%d, %d, %d) -> %d\n", sb, local_m, n, ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM * N + n * TileN));
       return ((sb * FragsPerSuperBlockM + wave_id + local_m*NumWaves) * TileM * N + n * TileN);
     };
 
     // load all b into wave 0 registers and store them back to shared memory
     // loading to LDS goes through registers so we might as well keep them at wave 0
+    //for (int i = thread_id(); i < (2*K*K*ROCWMMA_TILE_K); i += block_size()) shmem[i] = -1111111;
+    rocwmma::synchronize_workgroup();
     if (wave_id == 0) {
-      for (int k = 0; k < FragsK; ++k) {
-        for (int n = 0; n < FragsN; ++n) {
-          rocwmma::load_matrix_sync(b_frags[k][n], b + b_frag_offset(k, n), K);
-        }
-      }
-      for (int k = 0; k < FragsK; ++k) {
-        for (int n = 0; n < FragsN; ++n) {
-          rocwmma::store_matrix_sync(shmem + b_frag_offset(k, n), b_frags[k][n], K); // store B in shared memory for reuse
-        }
-      }
+      load_matrix(shmem, b, K*K);
     }
     // make sure all b fragments are in shared memory before we load them into other waves' registers
     rocwmma::synchronize_workgroup();
     // now have all other waves load b from shared memory into registers
-    if (wave_id > 0) {
-      // load B fragments from shared memory
-      for (int k = 0; k < FragsK; ++k) {
-        for (int n = 0; n < FragsN; ++n) {
-          rocwmma::load_matrix_sync(b_frags[k][n], shmem + b_frag_offset(k, n), K);
-        }
+    // load B fragments from shared memory
+    for (int k = 0; k < FragsK; ++k) {
+      for (int n = 0; n < FragsN; ++n) {
+        rocwmma::load_matrix_sync(b_frags[k][n], shmem + b_frag_offset(k, n), K);
       }
     }
 
-    // start loading all of A from global memory into registers
+    // start loading all of A into registers
     for (int sb = 0; sb < SuperBlocksM; ++sb) {
       for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
         for (int k = 0; k < FragsK; ++k) {
-          const T* a_ptr = a + a_frag_offset(sb, m, k);
+          //const T* a_ptr = a + a_frag_offset(sb, m, k);
+	        //const T* a_ptr = a + ((sb * FragsPerSuperBlockM + wave_id + m*NumWaves) * TileM + k * TileK * K*K);
+	        const T* a_ptr = a + a_frag_offset(sb, m, k);
           rocwmma::load_matrix_sync(a_frags[sb][m][k], a_ptr, K*K);
         }
       }
     }
+
+    // wait for all waves to finish writing to global memory before returning
+    rocwmma::synchronize_workgroup();
+
 
     // main loop: iterate over dimensions
     for (int d = 0; d < ndim; ++d) {
@@ -175,7 +212,9 @@ __device__ void transform_rocwmma_tiled_k(
             // we have already computed with columns 0..sb-1 of A and loaded them back from shared memory for the next iteration
             // so start at an offset
             for (int k = sb; k < FragsK; ++k) {
-              rocwmma::mma_sync(acc, a_frags[sb][m][k], b_frags[k][n], acc);
+              auto& a_frag = a_frags[sb][m][k];
+              auto& b_frag = b_frags[k][n];
+              rocwmma::mma_sync(acc, a_frag, b_frag, acc);
             }
           }
         }
@@ -212,12 +251,12 @@ __device__ void transform_rocwmma_tiled_k(
         }
 
         if (d < ndim-1) {
-          // wait for all waves to finish writing the super-block before we read it back for the next iteration
+          // wait for all waves to finish writing the super-block before we read it back in the next iteration
           rocwmma::synchronize_workgroup();
           // read the tiles in column sb back into registers for the next iteration
           for (int sbx = 0; sbx < SuperBlocksM; ++sbx) {
             for (int m = 0; m < FragsPerWaveSuperBlockM; ++m) {
-              T* a_ptr = shmem + a_frag_offset(0, m, sb);
+              T* a_ptr = shmem + a_frag_offset(sbx, m, 0);
               rocwmma::load_matrix_sync(a_frags[sbx][m][sb], a_ptr, K*K); // load the super-block of C back from shared memory for the next iteration
             }
           }
@@ -243,7 +282,7 @@ __device__ void transform_rocwmma_tiled_k(
 
 /* One kernel binary per K — register pressure is proportional to K, not max(K). */
 template <typename T, int K>
-LAUNCH_BOUNDS(ROCWMMA_NUM_THREADS, 1)
+LAUNCH_BOUNDS(rocwmma_get_num_threads(K), 1)
 __global__ void transform_rocwmma_tiled(int nfuncs,
                                         const T* A, const T* B, T* C, T* workspace) {
   constexpr int K2NDIM = K * K * K;
@@ -262,9 +301,9 @@ inline int transform_rocwmma_tiled_shmem_size(int K) {
   if (K < 16) {
     // For K<=16, we load A and B into shared memory. We need space for A (K^3), B (K^2), and C (K^3).
     return (K*K*K + K*K) * sizeof(T);
-  } else if (K == 16) {
-    // For K==16, we hold one copy of A/C in LDS
-    return (K*K*ROCWMMA_TILE_K) * sizeof(T);
+  } else if (K >= 16 && K <= 24) {
+    // For K 16, 20, 24 we hold one copy of A/C in LDS
+    return (K*K*rocwmma_get_frag_k(K)) * sizeof(T);
   } else {
     return transform_level3_shmem_size<T>(K);
   }
@@ -272,7 +311,7 @@ inline int transform_rocwmma_tiled_shmem_size(int K) {
 
 template <typename T>
 inline Dim3 transform_rocwmma_tiled_blockdim(int K) {
-  return {ROCWMMA_NUM_THREADS, 1, 1};
+  return {rocwmma_get_num_threads(K), 1, 1};
 }
 
 template <typename T>

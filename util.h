@@ -111,6 +111,7 @@ typedef hipStream_t Stream;
 #define HAVE_DEVICE_ARCH 1
 #define SCOPE __device__ __host__
 #define SYNCTHREADS() __syncthreads()
+#define WAVE_SIZE 32
 #elif defined(__HIP__)
 #define SCOPE __device__ __host__ inline
 // TODO: how to abort a kernel on AMD?
@@ -119,6 +120,7 @@ typedef hipStream_t Stream;
   #define SYNCTHREADS() __syncthreads()
   #define SHARED __shared__
   #define HAVE_DEVICE_ARCH 1
+  #define WAVE_SIZE warpSize
 #else
   #define SYNCTHREADS()
   #define SHARED
