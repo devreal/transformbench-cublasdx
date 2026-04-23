@@ -2,6 +2,7 @@
 
 #include "util.h"
 #include "mxm_level3.h"
+#include "block_stack_allocator.h"                 
 
 /**
  * Transform wrapper for Level-3 (B in LDS + register accumulation).
@@ -36,13 +37,23 @@ LAUNCH_BOUNDS(MAX_THREADS_PER_BLOCK, 1)
 __global__ void transform_kernel_level3_k(int nfuncs,
                                            const T* A, const T* B, T* C, T* workspace) {
   constexpr int K2NDIM = K * K * K;
+  __shared__ BlockStackAllocator bs;
+  size_type sh_mem =  mra::mTxmq_level3_shmem_size<T>(K);
+  bs.init(sh_mem);
+  auto bsa = bs.alloc<T>(K*K);
+  T* B_shmem = bsa.get();
+
+  for(size_t i = thread_id();i<(K*K);i+=block_size()){
+    B_shmem[i] = B[i];
+  }
+
   T* w = workspace + blockIdx.x * K2NDIM;
   for (int i = blockIdx.x; i < nfuncs; i += gridDim.x) {
     const T* a = A + i * K2NDIM;
     T* c       = C + i * K2NDIM;
     /* result pointer starts at c; workspace is w */
     T* result  = c;
-    transform_level3_k<T, K>(a, B, result, w);
+    transform_level3_k<T, K>(a, B_shmem, result, w);
   }
 }
 
