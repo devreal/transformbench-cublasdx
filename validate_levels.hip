@@ -4,13 +4,17 @@
  * Usage:
  *   ./validate_levels [-l <level>] [-K <k>] [-N <nfuncs>]
  *
- *   -l  level to validate (2-7, default 3)
- *         2  L2: B cached in LDS
- *         3  L3: register blocking (K-templated)
- *         4  L4: AMD MFMA + L3 fallback
- *         5  L5: wave-specialised double-buffering MFMA (HIP only)
- *         6  L6: Kronecker product GEMM (hipBLAS)
- *         7  L7: multi-wave MFMA, B resident in VGPRs (HIP only)
+ *   -l  level to validate (2-11, default 3)
+ *         2   L2:  B cached in LDS
+ *         3   L3:  register blocking (K-templated)
+ *         4   L4:  AMD MFMA + L3 fallback
+ *         5   L5:  wave-specialised double-buffering MFMA (HIP only)
+ *         6   L6:  rocWMMA
+ *         7   L7:  multi-wave MFMA, B resident in VGPRs (HIP only)
+ *         8   L8:  Kronecker product GEMM (hipBLAS)
+ *         9   L9:  block-distributed MFMA, K=16        (HIP only)
+ *         10  L10: block-distributed rocWMMA, K=16     (HIP only)
+ *         11  L11: block-distributed K=20 hybrid MFMA  (HIP only)
  *   -K  single K value; if omitted sweeps K in {4,6,8,10}
  *   -N  batch size (default 16)
  */
@@ -32,7 +36,9 @@
 #  include "transform_cublasdx.h" // L5 — cuBLASDx (NVIDIA only)
 #endif
 #include "transform_rocwmma.h"
-#include "transform_kron.h"     // L6
+#include "transform_kron.h"     // L8
+#include "transform_blocked.h"          // L9, L11 (HIP-only)
+#include "transform_blocked_rocwmma.h"  // L10    (HIP-only)
 
 template <typename T>
 void test_level(int level, int K, int nfuncs) {
@@ -107,8 +113,22 @@ void test_level(int level, int K, int nfuncs) {
             blasDestroy(blas_handle);
             break;
         }
+#if defined(__HIP__)
+        case 9:
+            submit_transform_bench_blocked<T>(nfuncs, nblocks, K, d_A, d_B, d_Ctest, d_workspace, stream);
+            SYNC_STREAM(stream);
+            break;
+        case 10:
+            submit_transform_bench_blocked_rocwmma<T>(nfuncs, nblocks, K, d_A, d_B, d_Ctest, d_workspace, stream);
+            SYNC_STREAM(stream);
+            break;
+        case 11:
+            submit_transform_bench_blocked_k20<T>(nfuncs, d_A, d_B, d_Ctest, d_workspace, stream);
+            SYNC_STREAM(stream);
+            break;
+#endif // __HIP__
         default:
-            std::cerr << "Unknown level " << level << " (valid: 2-7)\n";
+            std::cerr << "Unknown level " << level << " (valid: 2-11)\n";
             FREE(d_A); FREE(d_B); FREE(d_Cref); FREE(d_Ctest);
             FREE(d_workspace_ref); FREE(d_workspace);
             if (d_KronMat) FREE(d_KronMat);

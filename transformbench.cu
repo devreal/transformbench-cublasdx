@@ -12,16 +12,23 @@
 #include "transform_level7.h"
 #include "transform_kron.h"
 #include "mxm_cublasdx.h"
+#include "transform_blocked.h"          /* L9, L11 (HIP-only, see __HIP__ guards) */
+#include "transform_blocked_rocwmma.h"  /* L10    (HIP-only) */
 #include "util.h"
 
 /**
  * Optimization levels:
- *   1 - L1: thread-parallel over j, serial k-loop, all global memory (mxm.h fallback)
- *   2 - L2: B in LDS, threads distributed over rows
- *   3 - L3: B in LDS + register accumulation (acc[K] in VGPRs)
- *   4 - L4: AMD MFMA (GFX90A/GFX940) for K=16,32; falls back to L3 elsewhere
- *   5 - L5: cuBLASDx (NVIDIA only, double-buffered block GEMM with Tensor Cores)
- *   6 - L6: Single GEMM via K³×K³ Kronecker product (B^T ⊗ B^T ⊗ B^T)
+ *   1  - L1: thread-parallel over j, serial k-loop, all global memory (mxm.h fallback)
+ *   2  - L2: B in LDS, threads distributed over rows
+ *   3  - L3: B in LDS + register accumulation (acc[K] in VGPRs)
+ *   4  - L4: AMD MFMA (GFX90A/GFX940) for K=16,32; falls back to L3 elsewhere
+ *   5  - L5: cuBLASDx (NVIDIA only, double-buffered block GEMM with Tensor Cores)
+ *   6  - L6: rocWMMA (HIP)
+ *   7  - L7: multi-wave MFMA, B resident in VGPRs (HIP)
+ *   8  - L8: Single GEMM via K³×K³ Kronecker product (B^T ⊗ B^T ⊗ B^T)
+ *   9  - L9:  block-distributed MFMA transform, K=16            (HIP)  -- "blocked"
+ *   10 - L10: block-distributed rocWMMA transform, K=16         (HIP)  -- "blocked-rocwmma"
+ *   11 - L11: block-distributed K=20 hybrid MFMA (4x4x4 + 16x16x4) (HIP) -- "blocked-k20"
  */
 
 template<typename T>
@@ -51,15 +58,18 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
   }
 
   const char* level_names[] = {
-    "",           /* unused [0] */
-    "L1-global",  /* 1 */
-    "L2-lds_b",   /* 2 */
-    "L3-regblk",  /* 3 */
-    "L4-mfma",    /* 4 */
-    "L5",/* 5 */
-    "L6-rocwmma",/* 6 */
-    "L7-builtins",/* 7 */
-    "L8-kron"     /* 8 */
+    "",                    /* unused [0] */
+    "L1-global",           /* 1 */
+    "L2-lds_b",            /* 2 */
+    "L3-regblk",           /* 3 */
+    "L4-mfma",             /* 4 */
+    "L5",                  /* 5 */
+    "L6-rocwmma",          /* 6 */
+    "L7-builtins",         /* 7 */
+    "L8-kron",             /* 8 */
+    "L9-blocked",          /* 9  */
+    "L10-blocked-rocwmma", /* 10 */
+    "L11-blocked-k20",     /* 11 */
   };
 
   /* Print shmem and thread dims for this level */
@@ -98,6 +108,20 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
       smem_size   = kron_shmem_size<T>(K);
       thread_dims = kron_blockdim(K);
       break;
+#if defined(__HIP__)
+    case 9:
+      smem_size   = (int)blocked_shmem_size<T>(K);
+      thread_dims = blocked_blockdim<T>(K);
+      break;
+    case 10:
+      smem_size   = (int)blocked_rocwmma_shmem_size<T>(K);
+      thread_dims = blocked_rocwmma_blockdim<T>(K);
+      break;
+    case 11:
+      smem_size   = (int)blocked_k20_shmem_size<T>();
+      thread_dims = blocked_k20_blockdim<T>();
+      break;
+#endif // __HIP__
   }
 
   /* Level 8: build Kronecker matrix once, before the timing loop */
@@ -144,6 +168,17 @@ void transform_bench(int nreps, int ntasks, int nfuncs, int nblocks, int K, int 
         case 8:
           submit_transform_kron_bench<T>(nfuncs, K, A, KronMat, C, blas_handle, streams[t%num_streams]);
           break;
+#if defined(__HIP__)
+        case 9:
+          submit_transform_bench_blocked<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
+          break;
+        case 10:
+          submit_transform_bench_blocked_rocwmma<T>(nfuncs, nblocks, K, A, B, C, workspace, streams[t%num_streams]);
+          break;
+        case 11:
+          submit_transform_bench_blocked_k20<T>(nfuncs, A, B, C, workspace, streams[t%num_streams]);
+          break;
+#endif // __HIP__
       }
     }
     for (int t = 0; t < num_streams; ++t) {
@@ -193,7 +228,7 @@ int main(int argc, char **argv) {
   int N      = opt.parse("-N", 2048);  /* number of functions */
   int K      = opt.parse("-K", 16);   /* number of coefficients */
   int M      = opt.parse("-M", 512);  /* max number of blocks */
-  int level  = opt.parse("-l", 0);    /* 0 = auto, 1-5 = explicit */
+  int level  = opt.parse("-l", 0);    /* 0 = auto, 1-11 = explicit (9-11 are HIP-only blocked variants) */
   int num_streams = opt.parse("-s", 4); /* number of concurrent streams to use */
 
   /* Legacy -m flag: force level 1 */
