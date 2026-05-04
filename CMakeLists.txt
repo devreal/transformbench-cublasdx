@@ -103,6 +103,10 @@ if (CMAKE_HIP_COMPILER)
   add_executable(validate_levels validate_levels.hip)
   target_link_libraries(validate_levels PUBLIC libmra roc::hipblas)
 
+  # Correctness test: GPU L1 vs CPU mTxm reference (mirrors madness/transform3d.cc)
+  add_executable(validate validate.hip)
+  target_link_libraries(validate PUBLIC libmra)
+
   if (USE_SUGGEST_LAYOUT)
       # Enable using suggested layout instead of get_layout
       target_compile_definitions(transformbench_hip PUBLIC USE_SUGGEST_LAYOUT)
