@@ -40,3 +40,10 @@ clangd*
 compile_commands.json
 rocroof/
 
+# Python virtualenvs (rocprofiler tooling)
+.rocprof-venv/
+rocprof-compute-local/
+
+# Profiling data
+prof/
+prof_*/
