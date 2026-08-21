@@ -62,14 +62,14 @@ __device__ void mTxmq_level3_impl(T* __restrict__ c, const T* a, const T* b_shme
  */
 template <typename T, int K>
 __device__ void mTxmq_level3_k(T* __restrict__ c, const T* a, const T* b) {
-  extern __shared__ char smem_level3[];
-  T* b_shmem = reinterpret_cast<T*>(smem_level3);
+  // extern __shared__ char smem_level3[];
+  // T* b_shmem = reinterpret_cast<T*>(smem_level3);
 
-  for (int idx = (int)threadIdx.x; idx < K * K; idx += (int)blockDim.x)
-    b_shmem[idx] = b[idx];
-  __syncthreads();
+  // for (int idx = (int)threadIdx.x; idx < K * K; idx += (int)blockDim.x)
+  //   b_shmem[idx] = b[idx];
+  // __syncthreads();
 
-  detail::mTxmq_level3_impl<T, K, true>(c, a, b_shmem);
+  detail::mTxmq_level3_impl<T, K, true>(c, a, b);
   __syncthreads();
 }
 
