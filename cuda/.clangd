@@ -1,0 +1,12 @@
+CompileFlags:
+  # compile_commands.json already has all flags; nothing to add/remove
+  Remove:
+    - -O3      # clangd doesn't need optimization; speeds up indexing
+
+Index:
+  Background: Build
+
+Diagnostics:
+  Suppress:
+    - pp_including_mainfile_in_preamble
+    - unknown_builtin
